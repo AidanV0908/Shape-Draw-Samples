@@ -1,0 +1,40 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEditor;
+
+[CustomEditor(typeof(Load))]
+public class LoadEditor : Editor
+{
+    int level = 1;
+
+    //Create int field for level and button in order to load level from file
+    public override void OnInspectorGUI()
+    {
+        EditorGUILayout.LabelField("References", EditorStyles.boldLabel);
+        DrawDefaultInspector();
+        //Label for loading
+        EditorGUILayout.LabelField("Load Level", EditorStyles.boldLabel);
+        //Add the int field for level
+        level = EditorGUILayout.IntField("Level", level);
+
+        //Button for load
+        Load myLoad = (Load)target;
+        if (GUILayout.Button("Load"))
+        {
+            myLoad.LoadLevelFromPath(level);
+        }
+        //Load empty
+        EditorGUILayout.LabelField("Load Empty", EditorStyles.boldLabel);
+        if (GUILayout.Button("Load Empty"))
+        {
+            myLoad.LoadEmpty();
+        }
+        //Clear scene
+        EditorGUILayout.LabelField("Clear Scene", EditorStyles.boldLabel);
+        if (GUILayout.Button("Clear"))
+        {
+            myLoad.ClearScene();
+        }
+    }
+}
