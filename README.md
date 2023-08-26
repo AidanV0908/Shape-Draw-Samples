@@ -3,3 +3,4 @@ This repo contains code samples from my project Shape Draw that I wanted to shar
 GameController - Controls all in-game actions
 LoadEditor - Modifies the load inspector
 ShapeDrawer - Allows the user to draw shapes, part of the core functionality of the game
+Level1.json - Example level data file created by Saver
