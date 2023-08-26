@@ -1,0 +1,481 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+#pragma warning disable CS0649
+public class ShapeDrawer : MonoBehaviour
+{
+    //The amount of deviation from the starting angle the mouse has to be to start drawing a new line segment
+    [SerializeField] private float maxAngleOffset;
+    //Minimum distance between points
+    [SerializeField] private float minDistance;
+    //The material the shape is going to use
+    [SerializeField] private Material shapeMat;
+    //Reference to game controller to update area
+    [SerializeField] private GameController gC;
+    //Shader
+    [SerializeField] private Material lineMat;
+
+    //The points that make up the shape being drawn
+    private List<Vector2> points;
+
+    //Line gameobject to show the player how the shape is going
+    private GameObject line;
+    //The linerenderer attached to the line
+    private LineRenderer lr;
+
+    //Whether draw mode is active
+    [HideInInspector] public bool drawMode;
+
+    //The effect that is spawned at the starting point until the line returns to it
+    [SerializeField] private GameObject returnMarker;
+
+    //On start, create the line gameobject (is empty until needed)
+    private void Start()
+    {
+        line = CreateLine();
+    }
+
+    //Update
+    private void Update()
+    {
+        //LMB down triggers start of shape creation
+        if (Input.GetMouseButtonDown(0))
+        {
+            //Begin drawing coroutine if mouse is currently not in a collider
+            if (!InCollider(Camera.main.ScreenToWorldPoint(Input.mousePosition)) && drawMode)
+            {
+                StartCoroutine(Draw());
+            }
+        }
+    }
+
+    //Starts drawing the shape
+    private IEnumerator Draw()
+    {
+        //Define/clear points array
+        points = new List<Vector2>();
+
+        //Adds starting point of the shape to the points array
+        Vector2 startingPoint = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+        points.Add(startingPoint);
+
+        //A boolean that helps detect when the user FIRST gets far enough away from the starting point
+        bool farEnough = false;
+        //A boolean that will help detect when the mouse first enters and exits a collider
+        bool inCollider = false;
+        //A boolean that will help detect if the shape was completed in the while loop
+        bool completed = false;
+        //The previous point accessed
+        Vector2 previousPoint;
+        //The return marker gameobject (in the scene)
+        GameObject rMarker = null;
+
+        /*
+         * MAIN METHODS
+         */
+        //Starts drawing the shape
+        //While loop for LMB, if the LMB is still down shape creation is still continuing. Checks points and if the angle between points deviates too much places a point and changes the angle. Also places a point at previous position if collider is hit
+        while (Input.GetMouseButton(0))
+        {
+            //Set previousPoint to the current mouse position
+            previousPoint = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+
+            //Wait
+            yield return null;
+
+            //Update the line
+            UpdatePoints(line);
+
+            //Current position
+            Vector2 currentPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+
+            //Once player gets far enough from starting point, generate an effect and wait for player to return to it. If the player does not and the mouse button is lifted, the shape turns red and is cancelled
+            if (!farEnough && Distance(currentPos, startingPoint) > minDistance)
+            {
+                //Far enough now true
+                farEnough = true;
+                //Generate effect
+                rMarker = Instantiate(returnMarker, (Vector3)startingPoint, Quaternion.identity);
+            }
+
+            //Check if the mouse is in a collider or goes through a collider. When it first enters a collider, a point will be added to the points list and no action will be taken until the player leaves. Upon exit, lineAngle will update.
+            while (ThroughCollider(previousPoint, Camera.main.ScreenToWorldPoint(Input.mousePosition)))
+            {
+                if (inCollider == false)
+                {
+                    inCollider = true;
+                    //If player is in the collider, we want to save their last point before they move again, but we also want to check it's not the last point to avoid redundancy
+                    if (points[points.Count - 1] != previousPoint && !Intersection(previousPoint, points[points.Count - 1], false))
+                    {
+                        points.Add(previousPoint);
+                    }
+                }
+                //Waits here until not in collider anymore
+                yield return null;
+            }
+
+            //Upon leaving collider, lineAngle updates
+            if (inCollider == true)
+            {
+                inCollider = false;
+            }
+
+            //If the point is not in a collider, then it is added to the points array if far enough away, given no intersections
+            if (Distance(currentPos, points[points.Count - 1]) > minDistance)
+            {
+                if (!Intersection(currentPos, points[points.Count - 1], false))
+                {
+                    points.Add(currentPos);
+                }
+            }
+
+            //Return check
+            if (farEnough && Distance(currentPos, startingPoint) < minDistance)
+            {
+                if (rMarker != null)
+                {
+                    Destroy(rMarker);
+                }
+                //This is when the shape is completed, the only scenerio and after an area check is completed will a shape be build
+                completed = true;
+                //Check area
+                if (CalculateArea(points.ToArray()) <= gC.GetArea())
+                {
+                    //Show the player the shape was successful
+                    UpdatePoints(line);
+                    lr.startColor = Color.green;
+                    lr.endColor = Color.green;
+                    yield return new WaitForSecondsRealtime(1);
+                    GenerateShape(points);
+                    ResetLine();
+                } else
+                {
+                    //Turn line red and give the user a message saying invalid shape
+                    lr.startColor = Color.red;
+                    lr.endColor = Color.red;
+                    yield return new WaitForSecondsRealtime(1);
+                    ResetLine();
+                }
+                break;
+            }
+        }
+
+        //If during the while loop the shape was not completed, we turn the line red for a second then reset it
+        if (!completed)
+        {
+            if (rMarker != null)
+            {
+                Destroy(rMarker);
+            }
+            //Turn line red and give the user a message saying invalid shape
+            lr.startColor = Color.red;
+            lr.endColor = Color.red;
+            yield return new WaitForSecondsRealtime(1);
+            ResetLine();
+        }
+    }
+
+    //Generates a shape gameobject from a list of points
+    private void GenerateShape(List<Vector2> points)
+    {
+        //Create shape for the game object
+        GameObject shape = new GameObject("Shape");
+        shape.tag = "Shape";
+
+        //Add all the components we will need to use
+        shape.AddComponent<Rigidbody2D>();
+        shape.AddComponent<MeshFilter>();
+        shape.AddComponent<MeshRenderer>();
+        shape.AddComponent<PolygonCollider2D>();
+
+        //Convert the points into a list of vertices
+        Vector2[] vertices2d = points.ToArray();
+
+        //Set mass, scales with area
+        shape.GetComponent<Rigidbody2D>().mass = CalculateArea(vertices2d) * GameSettings.massMultiplier;
+
+        //Set polygon collider to these vertices
+        PolygonCollider2D poly2d = shape.GetComponent<PolygonCollider2D>();
+        poly2d.points = vertices2d;
+
+        //Uv map
+        Vector2[] uvs = GenerateUV(vertices2d);
+
+        //Create a triangulator for the points to help us make our mesh
+        Triangulator t = new Triangulator(vertices2d);
+        int[] indices = t.Triangulate();
+
+        //Turns vertices2d into a 3d array to set mesh vertices
+        Vector3[] vertices = new Vector3[vertices2d.Length];
+        for (int i = 0; i < vertices2d.Length; i++)
+        {
+            vertices[i] = (Vector3)vertices2d[i];
+        }
+
+        //Create a mesh
+        Mesh mesh = new Mesh();
+        mesh.vertices = vertices;
+        mesh.triangles = indices;
+        mesh.uv = uvs;
+        mesh.RecalculateNormals();
+        mesh.RecalculateBounds();
+        shape.GetComponent<MeshFilter>().sharedMesh = mesh;
+        shape.GetComponent<MeshRenderer>().material = shapeMat;
+        shape.GetComponent<MeshRenderer>().sortingOrder = 2;
+        //Get the area of the new shape and set game controller's new area
+        float newArea = gC.GetArea() - CalculateArea(vertices2d);
+        gC.SetArea(newArea);
+    }
+
+    //Create the uv map
+    private Vector2[] GenerateUV(Vector2[] vertices)
+    {
+        //UV
+        Vector2[] uvs = new Vector2[vertices.Length];
+
+        //Find the min and max values of the mesh
+        float xMin = float.MaxValue;
+        float yMin = float.MaxValue;
+        float xMax = float.MinValue;
+        float yMax = float.MinValue;
+
+        foreach (Vector2 vert in vertices)
+        {
+            //Update x max and min
+            if (vert.x > xMax)
+            {
+                xMax = vert.x;
+            } else if (vert.x < xMin)
+            {
+                xMin = vert.x;
+            }
+
+            //Update y max and min
+            if (vert.y > yMax)
+            {
+                yMax = vert.y;
+            }
+            else if (vert.y < yMin)
+            {
+                yMin = vert.y;
+            }
+        }
+
+        //Get UV coordinates where vertice at max y gets y of 1 and min y gets 1, same with x
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            uvs[i] = new Vector2((vertices[i].x - xMin) / (xMax - xMin), (vertices[i].y - yMin) / (yMax - yMin));
+        }
+
+        return uvs;
+    }
+
+    //Create line without points
+    private GameObject CreateLine()
+    {
+        GameObject line = new GameObject("Line");
+        line.AddComponent<LineRenderer>();
+        lr = line.GetComponent<LineRenderer>();
+        lr.startColor = Color.white;
+        lr.endColor = Color.white;
+        lr.startWidth = 0.1f;
+        lr.endWidth = 0.1f;
+        lr.useWorldSpace = true;
+        lr.material = lineMat;
+        return line;
+    }
+
+    //Adds points to the line
+    private void UpdatePoints(GameObject line)
+    {
+        //Get the line renderer
+        LineRenderer lr = line.GetComponent<LineRenderer>();
+        Vector3[] linePoints = new Vector3[points.Count];
+        for (int i = 0; i < points.Count; i++)
+        {
+            linePoints[i] = new Vector3(points[i].x, points[i].y, 0);
+        }
+        //Set line renderer positions
+        lr.positionCount = linePoints.Length;
+        lr.SetPositions(linePoints);
+    }
+
+    //Check for intersection
+    private bool Intersection(Vector2 point, Vector2 previousPoint, bool excuseFirst)
+    {
+        //Special case for two line segments (3 points) with excuse first - as long as they aren't colinear they can create a shape.
+        if (points.Count == 3 && excuseFirst)
+        {
+            if (points[1].x - points[0].x / points[1].y - points[0].y != points[2].x - points[1].x / points[2].y - points[1].y)
+            {
+                return false;
+            }
+            else
+            {
+                return true;
+            }
+        }
+
+        //Loops through all current points in points (except for last one, which is previous point) and checks isIntersecting with those lines
+        for (int i = 0; i < points.Count - 2; i++)
+        {
+            //Extra incrementation of i if first point is being excused
+            if (i == 0 && excuseFirst)
+            {
+                i++;
+            }
+            //First check
+            if (isIntersecting(point, previousPoint, points[i], points[i + 1]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    //Checks if line segment intersects collider
+    private bool ThroughCollider(Vector2 point1, Vector2 point2)
+    {
+        // Cast a ray along segment
+        RaycastHit2D hit = Physics2D.Raycast(point1, point2 - point1, Distance(point2, point1));
+
+        // If it hits something...
+        if (hit.collider != null)
+        {
+            //Checks if the collider hit is a trigger (such as coins, exc). You can draw on those.
+            if (hit.collider.isTrigger == false)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    //Checks if point is in collider
+    private bool InCollider(Vector2 point)
+    {
+        // Cast a ray straight down.
+        RaycastHit2D hit = Physics2D.Raycast(point, Vector2.zero);
+
+        // If it hits something...
+        if (hit.collider != null)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    //Clears line
+    private void ResetLine()
+    {
+        lr.positionCount = 0;
+        lr.startColor = Color.white;
+        lr.endColor = Color.white;
+    }
+
+    /*
+     * SNAPPING METHOD
+     */
+    //Snaps the current point to its angle. Works but is janky
+    private Vector2 Snap(Vector2 startingPoint, Vector2 endingPoint, float angle)
+    {
+        Vector2 diff = endingPoint - startingPoint;
+        float diffMag = diff.magnitude;
+
+        //Get a unit vector from our angle (-180 to 180)
+        Vector2 unitVector = GetUnitVector(angle);
+        Vector2 newDiff = diffMag * unitVector;
+        return new Vector2(startingPoint.x + newDiff.x, startingPoint.y + newDiff.y);
+    }
+
+    /*
+     * HELPER METHODS
+     */
+    //Function gets the orientation between points (CW, CCW, or Colinear?), helpful for checking for intersection
+    private static int orientation(Vector2 Point1, Vector2 Point2, Vector2 Point3)
+    {
+        //Uses the slope formulas of the three points, if val > 0 clockwise, less than 0 ccw, 0 = colinear
+        float val = (Point2.y - Point1.y) * (Point3.x - Point2.x) -
+           (Point2.x - Point1.x) * (Point3.y - Point2.y);
+
+        //Returns zero if val is 0 (colinear)
+        if (val == 0) return 0;
+
+        //Returns 1 if greater than 0 and 2 if less than (cw = 1 ccw = 2)
+        return (val > 0) ? 1 : 2;
+    }
+
+    //Checks if two line segments are intersecting : used a reference https://www.geeksforgeeks.org/check-if-two-given-line-segments-intersect/
+    private static bool isIntersecting(Vector2 LineAPoint1, Vector2 LineAPoint2, Vector2 LineBPoint1, Vector2 LineBPoint2)
+    {
+        //Get orientations
+        int o1 = orientation(LineAPoint1, LineAPoint2, LineBPoint1);
+        int o2 = orientation(LineAPoint1, LineAPoint2, LineBPoint2);
+        int o3 = orientation(LineBPoint1, LineBPoint2, LineAPoint1);
+        int o4 = orientation(LineBPoint1, LineBPoint2, LineAPoint2);
+
+        //Checks if orientations are correct
+        if (o1 != o2 && o3 != o4)
+        {
+            return true;
+        }
+
+        //Returns false if does not match
+        return false;
+    }
+
+    //Returns the distance between two points
+    private static float Distance(Vector2 point1, Vector2 point2)
+    {
+        return Mathf.Sqrt(Mathf.Pow(point2.x - point1.x, 2) + Mathf.Pow(point2.y - point1.y, 2));
+    }
+
+    //Gets the angle between two 2D points in degrees
+    private static float GetAngle(Vector2 startingPoint, Vector2 endPoint)
+    {
+        Vector2 diff = endPoint - startingPoint;
+        return Mathf.Atan2(diff.y, diff.x) * Mathf.Rad2Deg;
+    }
+
+    //Get a unit vector from an angle
+    private static Vector2 GetUnitVector(float angle)
+    {
+        //If hypotenuse is 1 (unit vector), then sin will get y and cos will get x
+        Vector2 unitVector = new Vector2(Mathf.Cos(angle * Mathf.Deg2Rad), Mathf.Sin(angle * Mathf.Deg2Rad));
+        return unitVector;
+    }
+
+    //Calculates area of shape within collider https://en.wikipedia.org/wiki/Polygon#Regular_polygons. Points must have the starting point at the end as well
+    private static float CalculateArea(Vector2[] vertices)
+    {
+        //Append the start, required for area
+        vertices = AppendStart(vertices);
+
+        //Calculate area
+        float area = 0;
+        for (int i = 0; i < vertices.Length - 1; i++)
+        {
+            float multA = vertices[i].x * vertices[i + 1].y;
+            float multB = vertices[i + 1].x * vertices[i].y;
+            area += multB - multA;
+        }
+        area = Mathf.Abs(0.5f * area);
+        return area;
+    }
+
+    //Method adds starting point back to vector2 array
+    private static Vector2[] AppendStart(Vector2[] points)
+    {
+        Vector2[] newPoints = new Vector2[points.Length + 1];
+        for (int i = 0; i < points.Length; i++)
+        {
+            newPoints[i] = points[i];
+        }
+        newPoints[points.Length] = points[0];
+        return newPoints;
+    }
+}
