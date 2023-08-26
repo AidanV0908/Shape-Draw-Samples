@@ -1,0 +1,193 @@
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+using UnityEngine.Tilemaps;
+using UnityEngine.Networking;
+using System.IO;
+
+#pragma warning disable CS0649
+public class GameController : MonoBehaviour
+{
+    //The current level
+    public static int level;
+
+    //Level data
+    private LevelData lData;
+
+    //Area the player can use
+    private float area;
+
+    //The max cam x dist
+    float xDist;
+
+    //Time elapsed
+    private float time;
+
+    //The coins picked up by the player
+    private int coins;
+
+    //The stars picked up by the player
+    private int stars;
+
+    //The player
+    private GameObject player;
+
+    //Area text field
+    [SerializeField] private AreaFieldUpdater aField;
+    //Time text field
+    [SerializeField] private TimeFieldUpdater tField;
+    //Reference to CameraController instance
+    [SerializeField] private CameraController camController;
+    //Reference to tile grid
+    [SerializeField] private Grid grid;
+
+    //Reference to the loader script
+    [SerializeField] private Load levelLoader;
+
+
+    //Gets level data and loads level upon awake
+    private void Awake()
+    {
+        //Get the player
+        player = GameObject.FindGameObjectWithTag("Player");
+
+        //Get level data and load level
+        StartCoroutine(GetData(level));
+    }
+
+    /*
+     * Conduct a Web Request to get level data on created retriever, returns levelData to controller via callback
+     */
+    public IEnumerator GetData(int level)
+    {
+        //Check if level is a valid, positive number
+        if (level > 0)
+        {
+            //Create retriever instance
+            GameObject retrieverGO = new GameObject();
+            retrieverGO.name = "retriever";
+            retrieverGO.AddComponent<GetLevelData>();
+            GetLevelData retriever = retrieverGO.GetComponent<GetLevelData>();
+
+            //Get level data through web request
+            string URL = Path.Combine(Application.streamingAssetsPath, "Level" + level + ".json");
+
+            UnityWebRequest www = UnityWebRequest.Get(URL);
+
+            yield return www.SendWebRequest();
+
+            if (!string.IsNullOrWhiteSpace(www.error))
+            {
+                Debug.LogError($"Error {www.responseCode} - {www.error}");
+                yield break;
+            } else
+            {
+                //Update lData, load level
+                lData = JsonUtility.FromJson<LevelData>(www.downloadHandler.text);
+                camController.xDist = lData.GetXDist();
+                player.GetComponent<PlayerController>().xDist = lData.GetXDist();
+                SetArea(lData.GetAreaLimit());
+                levelLoader.LoadLevel(lData);
+            }
+
+            //Destroy the retriever instance
+            Destroy(retriever);
+        }
+    }
+
+    //Area limit
+    private void SetArea(int s_area)
+    {
+        area = s_area;
+        aField.UpdateText(area);
+    }
+
+    //Sets time and area
+    private void Start()
+    {
+        time = 0;
+        tField.UpdateText(TimeConverter.ConvertTime(time));
+    }
+
+    private void Update()
+    {
+        //Update timer
+        UpdateTimer();
+
+        //Check if player died
+        if (player.transform.position.y < -5)
+        {
+            GameOver();
+        }
+    }
+
+    //Get area
+    public float GetArea()
+    {
+        return area;
+    }
+
+    //Set area, updates aFieldUpdater
+    public void SetArea(float newArea)
+    {
+        area = newArea;
+        aField.UpdateText(area);
+    }
+
+    //Update timer
+    private void UpdateTimer()
+    {
+        time += Time.deltaTime;
+        tField.UpdateText(TimeConverter.ConvertTime(time));
+    }
+
+    //Trigger endgame
+    public void EndGame()
+    {
+        //Unlock next level
+        PlayerData.level++;
+        //Saves the player's results
+        LastLevelResults.lastCoins = coins;
+        LastLevelResults.lastStars = stars;
+        LastLevelResults.lastTime = time;
+        LastLevelResults.lastAreaRemaining = area;
+        //Adds coins and stars to player's data
+        PlayerData.coins += coins;
+        PlayerData.stars += stars;
+        //Loads results scene
+        SceneManager.LoadScene("Results");
+    }
+
+    //Trigger game over
+    public void GameOver()
+    {
+        //Loads game over scene
+        SceneManager.LoadScene("GameOver");
+    }
+
+    //Report the pickup of an item with tag
+    public void ReportPickup(string tag)
+    {
+        if (tag == "Coin")
+        {
+            coins++;
+        } else if (tag == "Star")
+        {
+            stars++;
+        }
+        Debug.Log("Coins: " + coins + ". Stars: " + stars + ".");
+    }
+
+    //Restart
+    public void Restart()
+    {
+        levelLoader.ClearScene();
+        coins = 0;
+        stars = 0;
+        time = 0;
+        (area, xDist) = (lData.GetAreaLimit(), lData.GetXDist());
+        aField.UpdateText(area);
+        levelLoader.LoadLevel(lData);
+    }
+}
